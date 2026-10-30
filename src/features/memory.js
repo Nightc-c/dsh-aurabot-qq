@@ -414,69 +414,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
     // 注意：随每条消息变化的「相关记忆」不放在这里（#79）——运行时上下文快照每轮都会追加到历史，
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
-    return parts.join('\n')
-  }
-
-  // 主人私聊里问起群里的事：才临时把最近 24 小时的群聊流水当成「她自己的见闻」补进这一轮
-  // （不常驻、不写进记忆；默认关，面板「聊天 → 主人私聊」里可以调每个群几条、限定只取哪些群）
-  const GROUP_TALK = /(群|群聊|群里|他们|大家|那些人在聊)/
-
-  function groupBackdrop (chat, queryText) {
-    if (!chat || chat.kind !== 'private') return ''
-    const all = getConfig()
-    const ob = all.group && all.group.ownerBrief
-    if (!ob || ob.enabled !== true) return ''
-    if (!all.ownerQQ || String(chat.userId) !== String(all.ownerQQ)) return ''
-    if (!GROUP_TALK.test(String(queryText || ''))) return ''
-    const now = Date.now()
-    const cutoff = now - 86400_000
-    let rows = []
-    try {
-      for (const dk of [dayKey(), dayKey(new Date(cutoff))]) {
-        for (const l of hub?.chatLogOf?.(dk) || []) {
-          if (!l || !String(l.chatId).startsWith('group:') || !String(l.text || '').trim()) continue
-          const t = Number(l.t) || 0
-          if (t && t < cutoff) continue
-          rows.push(l)
-        }
-      }
-      rows.sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0))
-    } catch (error) {
-      return ''
+    // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
+    // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
+    const RESIDENT_MAX_CHARS = 600
+    let resident = parts.join('\n')
+    if (resident.length > RESIDENT_MAX_CHARS) {
+      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
     }
-    // 群白名单：配了就只取这些群（不配 = 所有群）
-    const allow = new Set((ob.groups || []).map(String))
-    if (allow.size) rows = rows.filter((l) => allow.has(String(l.chatId).slice(6)))
-    if (!rows.length) return ''
-    // 按群分组，每个群各取最后 limit 条（最多 30），整体再兜一个上限
-    const limit = Math.max(1, Math.min(30, Number(ob.lines) || 12))
-    const byGroup = new Map()
-    for (const l of rows) {
-      const gid = String(l.chatId).slice(6)
-      if (!byGroup.has(gid)) byGroup.set(gid, [])
-      byGroup.get(gid).push(l)
-    }
-    const blocks = []
-    let total = 0
-    for (const [gid, list] of byGroup) {
-      if (total >= 120) break
-      const tail = list.slice(-limit)
-      total += tail.length
-      const name = hub?.groupNames?.get?.(gid) || ''
-      const title = name && name !== gid ? `群「${name}」（${gid}）` : `群 ${gid}`
-      const body = tail.map((l) => {
-        const who = l.who === 'bot' ? '我' : (l.who || '有人')
-        return `${who}：${String(l.text).replace(/\s+/g, ' ').trim().slice(0, 100)}`
-      }).join('\n')
-      blocks.push(`【${title} · 最近 ${tail.length} 条】\n${body}`)
-    }
-    log.info(`主人问起群里的事：补了 ${blocks.length} 个群、共 ${total} 条最近的群聊记录`)
-    // 措辞当成「她自己的见闻」，而不是「给她看的材料」——
-    // 否则她会回一句「我看到了」，而不是接着聊群里那件事本身。
-    return '（下面是你最近在几个群里经历过的片段，属于你自己的见闻 —— **不是主人发给你的消息**，别当成主人在跟你说话。'
-      + '主人提到群里的事时，就像回忆自己白天的经历一样接着说下去，不用特意说「我看到了」「我知道了」；'
-      + '群里的私事也别主动往外讲。想知道某个具体群的情况，就看你记得的那个群。）\n'
-      + blocks.join('\n\n') + '\n【以上是最近群里的情况】'
+    return resident
   }
 
   /**
@@ -488,17 +434,16 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (!cfg.enabled) return ''
     const q = String(queryText || '').trim()
     if (!q) return ''
-    const backdrop = groupBackdrop(chat, q)
     const recent = recentEvents()
     const shown = new Set(recent.map((m) => m.id))
     const about = chat && chat.kind === 'private' ? chat.userId : undefined
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
     const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
-    if (!hits.length) return backdrop
+    if (!hits.length) return ''
     let body = hits.map((h) => memoryLine(h.it)).join('；')
     if (body.length > 300) body = body.slice(0, 300) + '…'
-    return ['（你记得这些事，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）', backdrop].filter(Boolean).join('\n')
+    return '（你记得这些事，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）'
   }
 
   /** 回顾：结合最近聊天和已有经验，更新这个人的相处经验（合并、提炼、最多 8 条，概括不琐碎）。 */
