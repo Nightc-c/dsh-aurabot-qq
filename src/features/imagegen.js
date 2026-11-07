@@ -198,12 +198,19 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
     if (!cp.url) throw new Error('还没填自定义生图接口地址')
     const req = customRequest(c, prompt, image)
     log.info(`生图请求：${req.method} ${image ? '（含参考图）' : req.url.slice(0, 160)}`)
-    const r = await fetch(req.url, {
-      method: req.method,
-      headers: req.headers,
-      body: req.body,
-      signal: AbortSignal.timeout(180000),
-    })
+    let r
+    try {
+      r = await fetch(req.url, {
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        signal: AbortSignal.timeout(180000),
+      })
+    } catch (error) {
+      const cause = error && error.cause ? `（${error.cause.message || error.cause.code || String(error.cause)}）` : ''
+      log.warn(`生图请求本身失败：${error.message}${cause}`)
+      throw new Error(`生图请求失败：${error.message}${cause}`)
+    }
     const type = String(r.headers.get('content-type') || '')
     // 直接返回图片字节（pollinations 这类）
     if (type.startsWith('image/')) {
