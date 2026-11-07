@@ -93,7 +93,7 @@ export default {
           img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
           if (!img) api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
         }
-        const note = `（图刚画好，已经发在聊天里了。提示词是：${String(prompt).slice(0, 120)}${index ? `；画作编号 #${index}` : ''}。`
+        const note = `（你自己画的那张图已经发在聊天里了——这是你亲手画的，不是别人或工具画的。提示词是：${String(prompt).slice(0, 120)}${index ? `；画作编号 #${index}` : ''}。`
           + (img && saved ? `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）` : '')
           + `${img ? '你看一眼' : '你看不到这张图'}，用你自己的口气跟主人说一句。）`
         await hub.pushToSession(chat, img ? [img, { type: 'text', text: note }] : [{ type: 'text', text: note }], '')
@@ -106,7 +106,7 @@ export default {
 
     api.tool(({ chat, sessionId }) => (gen.enabled() && chat.kind !== 'system' ? defineTool({
       name: 'qq_draw_image',
-      description: '提交一次画图任务：图会自动画好、发到当前 QQ 聊天里，画完会回来告诉你。提交后先跟主人说一声你在画，不用等图。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。',
+      description: '画一张图发到当前聊天里。调用后你就开始画了（要十几秒到几十秒），画好图会自动发到聊天里，再回来告诉你结果——是你自己在画，不是别人。调用完先跟主人说一声你在画，不用等图。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。',
       properties: {
         prompt: str('画面描述'),
         image: str('可选参考图：last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
@@ -124,7 +124,7 @@ export default {
         const id = ++seq
         jobs.set(id, { id, chatId: chat.chatId, prompt: String(prompt || ''), status: 'drawing', startedAt: Date.now() })
         void runDraw(id, chat, { prompt, shape, reference })
-        return { ok: true, message: `画图任务 #${id} 已提交，画好会自动发到聊天里，到时候我再跟你说。先跟主人说一声你在画。` }
+        return { ok: true, message: `#${id} 开始画了——你正在画这张图。画好会自动发到聊天里，到时候再跟主人说一句。先跟主人说一声你在画。` }
       },
     }) : []))
     return gen

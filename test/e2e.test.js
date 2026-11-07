@@ -902,9 +902,9 @@ test('生图：工具只提交任务，画完由后台推回会话（能看图�
   const on = await draw('on')
   const call = on.first.toolCalls.find((c) => c.name === 'qq_draw_image')
   assert.equal(call.result.ok, true, '工具要立刻返回成功，不卡等画完')
-  assert.match(call.result.message || '', /已提交/, '返回里说明是「提交任务」而不是「已经画好」')
+  assert.match(call.result.message || '', /开始画/, '返回里说明她开始画了，不是「已经画好」')
   assert.ok(on.after.images > 0, '能看图时，画完推回会话要带图')
-  assert.match(on.after.userText || '', /图刚画好/, '推回会话的提示要说明图已经发了')
+  assert.match(on.after.userText || '', /你自己画的/, '推回会话的提示要说明这张是她自己画的')
   assert.match(on.after.userText || '', /画作编号 #\d+/, '推回时要给画作编号')
   assert.match(on.after.userText || '', /已保存到本机：/, '能看图时给本地路径，方便收录表情/存素材')
 
