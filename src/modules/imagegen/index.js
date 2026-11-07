@@ -124,6 +124,10 @@ export default {
         if (job) { job.status = 'failed'; job.error = error.message }
         api.log.warn(`生图 #${id} 失败：`, error.message)
         await hub.sendText(chat.chatId, `画 #${id} 没成：${error.message}`).catch(() => {})
+      } finally {
+        // 任务表只用来挡并发，画完就清掉；留着会随画图次数一直涨
+        const t = setTimeout(() => jobs.delete(id), 60_000)
+        t.unref?.()
       }
     }
 
