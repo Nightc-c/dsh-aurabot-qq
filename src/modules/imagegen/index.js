@@ -5,11 +5,26 @@
 // 再推回会话让她看一眼、自己说一句。这样两句话都是她在真会话里说的，工具也不会卡住。
 
 import { readFileSync } from 'node:fs'
-import { createImageGen, imageToolBlock, resolveDrawImage } from '../../features/imagegen.js'
+import { createImageGen, resolveDrawImage } from '../../features/imagegen.js'
+import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../../core/img.js'
 import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { dataDir } from '../../core/store.js'
 import { mimeOf } from '../../chat/inbound.js'
+
+/**
+ * 把画好的图缩到适合塞进下一轮请求的大小，返回原始的 base64 块（不预登记）。
+ * 不能直接用 imageToolBlock：它登记过的块再交给 pushToSession 会被二次 admit，
+ * 失败后整张图被丢掉，她就只剩一句「看不见画面」。
+ */
+async function imageForPush(buf, ffmpegPath, maxSide = 1024, maxBytes = 420 * 1024) {
+  if (buf.length <= maxBytes) return { type: 'image', data: buf.toString('base64'), mediaType: String(mimeOf(buf) || 'image/png') }
+  const ffmpeg = findFfmpeg(ffmpegPath)
+  let small = ffmpeg ? await shrinkImage(buf, maxSide, ffmpeg) : null
+  if (!small) small = await shrinkWithSharp(await findSharp(), buf, maxSide)
+  if (!small) return null
+  return { type: 'image', data: small.toString('base64'), mediaType: 'image/jpeg' }
+}
 
 export default {
   id: 'imagegen',
@@ -90,8 +105,8 @@ export default {
         const seeOwn = api.config().imageGen.seeOwn !== false
         let img = null
         if (visual && seeOwn) {
-          img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
-          if (!img) api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
+          img = await imageForPush(buf, api.config().bili && api.config().bili.ffmpegPath)
+          if (!img) api.log.debug('这次生图没把图交给模型（缩图失败），只给文字')
         }
         const note = `（你自己画的那张图已经发在聊天里了——这是你亲手画的，不是别人或工具画的。提示词是：${String(prompt).slice(0, 120)}${index ? `；画作编号 #${index}` : ''}。`
           + (img && saved ? `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）` : '')
