@@ -87,12 +87,13 @@ test('qq_draw_image 的构图可选，传到生成器；原主人权限在取图
   imagegenModule.setup({
     config: () => c, log, dsh: {}, lazy: () => ({}), route() {}, tool: (fn) => { build = fn },
     core: { local: { active: () => true, call: async (_kind, args) => { seen.push(args); return PNG } },
-      hub: { turnSendersAllOwner: () => owner, sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false } },
+      hub: { turnSendersAllOwner: () => owner, sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false, pushToSession: async () => {}, sendText: async () => {} } },
   })
   const tool = build({ chat: { kind: 'private', chatId: 'private:10001', userId: '10001' }, sessionId: 'shape-test' })
   assert.ok(!tool.parameters.required.includes('shape'))
   assert.deepEqual(tool.parameters.properties.shape.enum, ['square', 'portrait', 'landscape', 'wide'])
   assert.equal((await tool.execute({ prompt: '猫', shape: 'portrait' })).ok, true)
+  await new Promise((r) => setTimeout(r, 150))
   assert.equal(seen[0].size, '1024x1536')
   owner = false
   assert.equal((await tool.execute({ prompt: '猫', shape: 'wide' })).ok, false)

@@ -871,7 +871,7 @@ test('生图：主人让她画图，调生图服务并把图发出去', async ()
   assert.equal(st.config.imageGen.apiKeySet, true)
 })
 
-test('生图工具结果：能看图时带 image 块，纯文本模型只给文字（#37）', async () => {
+test('生图：工具只提交任务，画完由后台推回会话（能看图时带 image 块）', async () => {
   const http = await import('node:http')
   // 用带尺寸的 PNG：这张画之后还会被「存成表情」，表情库会校验宽高
   const png = fakePng(240, 240, 7)
@@ -882,47 +882,39 @@ test('生图工具结果：能看图时带 image 块，纯文本模型只给文�
   })
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
   const baseUrl = `http://127.0.0.1:${srv.address().port}/v1`
-  // 找准「这次画图」那一轮：别用 sentTo 计数判断，前一个用例的回复可能还在异步发送
-  const drawTurn = () => [...fake.turns].reverse().find((t) => (t.toolCalls || []).some((c) => c.name === 'qq_draw_image'))
+
+  // 一次画图会走两轮：①她接单（工具立即返回）；②画完后台推回会话让她说一句
   const draw = async (vision, seeOwn = true) => {
-    const before = drawTurn()
+    const before = fake.turns.length
     await fake.call('/save', {
       model: { vision },
       imageGen: { enabled: true, baseUrl, model: 'test-model', apiKey: 'img-key-123456', seeOwn },
     })
     mock.push(priv(OWNER, text('画一只鲸鱼')))
-    await until(() => drawTurn() && drawTurn() !== before, 15000)
-    return drawTurn().toolCalls.find((c) => c.name === 'qq_draw_image').result
+    await until(() => fake.turns.length > before, 15000)
+    const first = fake.turns.at(-1)
+    await until(() => fake.turns.length > before + 1, 20000)
+    await sleep(200)
+    const after = fake.turns.at(-1)
+    return { first, after }
   }
 
-  // 面板里声明「支持」：工具结果里要有图，而且是登记过的附件块
-  // （直接塞 base64 会让下一轮请求整轮失败，见 imageToolBlock 的注释）
-  const withImg = await draw('on')
-  assert.ok(withImg.image, '能看图的模型应拿到 image')
-  assert.equal(withImg.image.type, 'image')
-  assert.ok(withImg.image.attachment?.attachmentId, '要登记成附件块')
-  assert.equal(withImg.image.data, undefined, '不要裸 base64')
-  assert.match(withImg.message || '', /画作编号 #1/, '画完给一个画作编号，换头像 / 收表情时用')
-  // #59：能看图的模型要拿到本地保存路径，方便她收录表情包 / 存素材
-  assert.ok(withImg.path && /\.png$/.test(withImg.path), '能看图时要返回本地路径：' + JSON.stringify(withImg.path))
-  assert.match(withImg.message || '', /已保存到本机：/, '路径写进工具结果文字里')
-  const { existsSync } = await import('node:fs')
-  assert.equal(existsSync(withImg.path), true, '路径对应的文件真的存在')
-  assert.equal(withImg.prompt, '一只蓝色小鲸鱼', '带上原始提示词')
-  assert.ok(Number(withImg.bytes) > 0 && Number(withImg.elapsedMs) >= 0, '带字节数和耗时')
+  const on = await draw('on')
+  const call = on.first.toolCalls.find((c) => c.name === 'qq_draw_image')
+  assert.equal(call.result.ok, true, '工具要立刻返回成功，不卡等画完')
+  assert.match(call.result.message || '', /已提交/, '返回里说明是「提交任务」而不是「已经画好」')
+  assert.ok(on.after.images > 0, '能看图时，画完推回会话要带图')
+  assert.match(on.after.userText || '', /图刚画好/, '推回会话的提示要说明图已经发了')
+  assert.match(on.after.userText || '', /画作编号 #\d+/, '推回时要给画作编号')
+  assert.match(on.after.userText || '', /已保存到本机：/, '能看图时给本地路径，方便收录表情/存素材')
 
-  // 「让她画完自己看一眼」关掉：不传图、不给路径，但编号照给（还能换头像 / 存表情）
   const noLook = await draw('on', false)
-  assert.equal(noLook.image, undefined, '关掉开关就不该塞图')
-  assert.match(noLook.message || '', /没把图给你看/)
-  assert.match(noLook.message || '', /画作编号 #1/)
-  assert.doesNotMatch(noLook.message || '', /已保存到本机/, '开关关着时也不给路径')
+  assert.equal(noLook.after.images, 0, '关掉「让她自己看」就不往会话里塞图')
+  assert.match(noLook.after.userText || '', /看不到这张图/, '看不了图时要如实说，别让她编画面')
 
-  // 声明「不支持」：纯文本模型，绝不能塞 image 块
   const noImg = await draw('off')
-  assert.equal(noImg.image, undefined, '纯文本模型不应该拿到 image 块')
-  assert.match(noImg.message || '', /没能把图片交给你看/, '看不了图时要如实说，别让她编画面')
-  assert.doesNotMatch(noImg.message || '', /存在\s*[A-Za-z]:[\\/]|\.png|已保存到本机/, '看不了图的模型不给文件路径')
+  assert.equal(noImg.after.images, 0, '纯文本模型不带图')
+  assert.match(noImg.after.userText || '', /看不到这张图/)
 
   // 恢复默认
   await fake.call('/save', { model: { vision: 'auto' }, imageGen: { seeOwn: true } })

@@ -255,20 +255,25 @@ test('quote 复用 hub 引用解析缓存，按聊天隔离，支持私聊并保
 
 function drawTool(cfg, overrides = {}) {
   let build
-  const generated = [], sent = [], events = [], references = []
+  const generated = [], sent = [], events = [], references = [], pushed = [], texts = []
   const hub = {
     turnSendersAllOwner: () => true,
     referenceImage: async (chat, source) => { references.push({ chat, source }); return PNG },
     sendSegments: async (...args) => { sent.push(args); return { message_id: 1 } },
     canSeeImages: async () => false,
+    // 画完会把图推回会话 / 失败时发一条消息；单元测试里只要不炸就行
+    pushToSession: async (...args) => { pushed.push(args) },
+    sendText: async (...args) => { texts.push(args) },
     ...overrides,
   }
   imagegenModule.setup({ config: () => cfg, log, dsh: {}, lazy: () => ({ addEvent: (event) => events.push(event) }),
     route() {}, tool: (fn) => { build = fn },
     core: { hub, local: { active: () => true, call: async (slot, args) => { generated.push({ slot, args }); return OTHER } } },
   })
-  return { tool: build({ chat: privateChat, sessionId: 'img-test' }), generated, sent, events, references }
+  return { tool: build({ chat: privateChat, sessionId: 'img-test' }), generated, sent, events, references, pushed, texts }
 }
+
+const settle = () => new Promise((r) => setTimeout(r, 150))
 
 test('qq_draw_image 的 image 可选；quote 来源传递；沿用发送、存盘、经历和 seeOwn', async (t) => {
   const dir = sandbox(t), cfg = config({ seeOwn: false })
@@ -276,20 +281,22 @@ test('qq_draw_image 的 image 可选；quote 来源传递；沿用发送、存�
   assert.ok(!s.tool.parameters.required.includes('image'))
   const out = await s.tool.execute({ prompt: '换个颜色', image: 'quote' })
   assert.equal(out.ok, true, out.message)
+  assert.match(out.message, /已提交/, '工具只提交任务，不等画完')
+  await settle()
   assert.deepEqual(s.references, [{ chat: privateChat, source: 'quote' }])
   assert.equal(s.generated[0].args.image, b64)
   assert.equal(s.sent.length, 1)
   assert.equal(s.sent[0][0], privateChat.chatId)
   assert.equal(s.sent[0][1][0].data.file, 'base64://' + OTHER.toString('base64'))
-  assert.deepEqual(readFileSync(out.path), OTHER)
   assert.equal(readdirSync(join(dir, 'imagegen')).length, 1)
   assert.match(s.events[0].text, /^参考了一张图画了/)
   assert.equal(s.events[0].about, OWNER)
   assert.deepEqual(s.events[0].tags, ['画画'])
-  assert.equal(out.image, undefined)
-  assert.doesNotMatch(out.message, /已保存到本机/)
+  assert.equal(s.pushed.length, 1, '画完要推回会话让她自己说一句')
+  assert.match(String(s.pushed[0][1].map((b) => b.text).filter(Boolean).join('')), /图刚画好/)
   const plain = await s.tool.execute({ prompt: '新画' })
   assert.equal(plain.ok, true)
+  await settle()
   assert.match(s.events[1].text, /^按提示词画了一张图/)
   assert.equal(s.generated[1].args.image, undefined)
 })
@@ -325,8 +332,10 @@ test('工具拒绝任意路径，不调用生成服务，也不发送或记成�
 test('发送失败沿用原流程：不保存画作、不记成功经历', async (t) => {
   const dir = sandbox(t), s = drawTool(config(), { sendSegments: async () => false })
   const out = await s.tool.execute({ prompt: '猫', image: 'last' })
-  assert.equal(out.ok, false)
-  assert.match(out.message, /没有发到 QQ/)
+  assert.equal(out.ok, true, '任务本身提交成功；失败发生在后台')
+  await settle()
   assert.equal(s.events.length, 0)
   assert.ok(!readdirSync(dir).includes('imagegen'))
+  assert.equal(s.texts.length, 1, '后台失败要发一条消息告诉主人')
+  assert.match(String(s.texts[0][1]), /没成/)
 })

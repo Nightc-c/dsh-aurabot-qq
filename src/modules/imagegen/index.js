@@ -1,7 +1,11 @@
 // 内置模块：生图。她能画图发到聊天里（OpenAI 兼容的生图服务，或「本地接口」里接的 SD WebUI / ComfyUI）。
+//
+// 画图是慢操作（十几秒到几十秒）。如果让工具卡在那里等，她这一轮就被占住了，说不了话。
+// 所以工具只负责「提交任务」——立刻返回，她当场说一句「好，我这就去画」；画完由后台把图发进聊天，
+// 再推回会话让她看一眼、自己说一句。这样两句话都是她在真会话里说的，工具也不会卡住。
 
 import { readFileSync } from 'node:fs'
-import { createImageGen, drawResultBlocks, drawToolMessage, imageToolBlock, resolveDrawImage } from '../../features/imagegen.js'
+import { createImageGen, imageToolBlock, resolveDrawImage } from '../../features/imagegen.js'
 import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { dataDir } from '../../core/store.js'
@@ -53,66 +57,74 @@ export default {
     })
     api.route('/image/open-folder', async () => openPaintFolder())
 
+    // ---------- 画图任务：提交即返回，画完再推回会话 ----------
+    const jobs = new Map() // id → { id, chatId, prompt, status, startedAt, error }
+    let seq = 0
+    const MAX_PER_CHAT = 2 // 同一个聊天里同时最多排两张，多了直接拒绝，免得刷屏
+
+    function runningIn(chatId) {
+      return [...jobs.values()].filter((j) => j.chatId === chatId && j.status === 'drawing').length
+    }
+
+    async function runDraw(id, chat, { prompt, shape, reference }) {
+      const job = jobs.get(id)
+      try {
+        const buf = await gen.generate(String(prompt || ''), { shape, image: reference })
+        const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
+        if (!sent) throw new Error('没发到 QQ（检查试运行和网关）')
+        const saved = savePainting(buf, String(prompt || ''))
+        if (saved) api.log.debug(`生图已存盘：${saved}`)
+        const index = saved ? rememberPainting(chat.chatId, saved) : 0
+        if (job) job.status = 'done'
+        try {
+          memory.addEvent?.({
+            text: reference ? `参考了一张图画了：${String(prompt).slice(0, 120)}（提示词不一定等于实际画面）` : `按提示词画了一张图（不一定等于实际画面）：${String(prompt).slice(0, 120)}`,
+            about: chat.kind === 'private' ? chat.userId : '',
+            tags: ['画画'],
+            importance: 0.4,
+          })
+        } catch (error) { api.log.warn('生图已发送，但经历没记下来：', error.message) }
+        // 画完了：把图交给模型看（能看时），再推回会话让她自己说一句。
+        // 这一步发生在当前轮之后，不会和正在跑的那一轮抢队列。
+        const visual = (await hub.canSeeImages(chat)) === true
+        const seeOwn = api.config().imageGen.seeOwn !== false
+        let img = null
+        if (visual && seeOwn) {
+          img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
+          if (!img) api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
+        }
+        const note = `（图刚画好，已经发在聊天里了。提示词是：${String(prompt).slice(0, 120)}${index ? `；画作编号 #${index}` : ''}。`
+          + (img && saved ? `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）` : '')
+          + `${img ? '你看一眼' : '你看不到这张图'}，用你自己的口气跟主人说一句。）`
+        await hub.pushToSession(chat, img ? [img, { type: 'text', text: note }] : [{ type: 'text', text: note }], '')
+      } catch (error) {
+        if (job) { job.status = 'failed'; job.error = error.message }
+        api.log.warn(`生图 #${id} 失败：`, error.message)
+        await hub.sendText(chat.chatId, `画 #${id} 没成：${error.message}`).catch(() => {})
+      }
+    }
+
     api.tool(({ chat, sessionId }) => (gen.enabled() && chat.kind !== 'system' ? defineTool({
       name: 'qq_draw_image',
-      description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
+      description: '提交一次画图任务：图会自动画好、发到当前 QQ 聊天里，画完会回来告诉你。提交后先跟主人说一声你在画，不用等图。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。',
       properties: {
         prompt: str('画面描述'),
         image: str('可选参考图：last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
       },
       required: ['prompt'],
-      slow: '好，我这就去画，画好了发你。',
-      // 能看图时把原图放进工具结果（image 块），她当轮就能看见自己画了什么
-      render: drawResultBlocks,
       execute: async ({ prompt, shape, image }) => {
         if (api.config().imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
         if (image && api.config().imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
-        const startedAt = Date.now()
-        const reference = await resolveDrawImage(image, { hub, chat })
-        const buf = await gen.generate(String(prompt || ''), { shape, image: reference })
-        const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
-        if (!sent) return { ok: false, message: '画好了，但没有发到 QQ（请检查试运行和网关）' }
-        const saved = savePainting(buf, String(prompt || ''))
-        if (saved) api.log.debug(`生图已存盘：${saved}`)
-        try { memory.addEvent?.({ text: reference ? `参考了一张图画了：${String(prompt).slice(0, 120)}（提示词不一定等于实际画面）` : `按提示词画了一张图（不一定等于实际画面）：${String(prompt).slice(0, 120)}`, about: chat.kind === 'private' ? chat.userId : '', tags: ['画画'], importance: 0.4 }) }
-        catch (error) { api.log.warn('生图已发送，但经历没记下来：', error.message) }
-        let visual = (await hub.canSeeImages(chat)) === true
-        // 「让她画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 不给图、也不给路径。
-        const seeOwn = api.config().imageGen.seeOwn !== false
-        // 只有明确能看图的模型才把图交给它；纯文本模型只拿文字，不会崩。
-        // 图要先缩、再登记成 DSH 附件块 —— 直接塞 base64 会让下一轮请求整轮失败（实测）
-        let img = null
-        if (visual && seeOwn) {
-          img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
-          if (!img) {
-            // 图没给成：如实说看不了，别让她照着提示词编画面细节
-            visual = false
-            api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
-          }
-        }
-        const shown = Boolean(img)
-        let message
-        if (!visual) message = drawToolMessage({ visual: false })
-        else if (!seeOwn) message = drawToolMessage({ visual: true, seeOwn: false })
-        else if (!shown) message = drawToolMessage({ visual: false })
-        else message = drawToolMessage({ visual: true, seeOwn: true })
-        // 画作编号：换头像 / 收表情时用编号，别用路径（路径只在图真的交出去时才附带）
-        const index = saved ? rememberPainting(chat.chatId, saved) : 0
-        const out = {
-          ok: true,
-          message,
-          prompt: String(prompt || ''),
-          bytes: buf.length,
-          elapsedMs: Date.now() - startedAt,
-          ...(saved ? { path: saved } : {}),
-        }
-        if (img) out.image = img
-        if (index && saved) out.message += `\n画作编号 #${index}（想换头像、收成表情时用这个编号）`
-        // 只有**图真的交给模型了**才把本地路径告诉她（#59）：收录表情包 / 存素材 / qq_add_sticker 用；
-        // 看不了图或开关关着时不给路径，免得她知道路径就去读图，绕开「不给看」的判断。
-        if (shown && saved) out.message += `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）`
-        return out
+        // 参考图在提交前就解析：路径/网址这类非法输入要当场拒绝，别拖到后台才失败
+        let reference
+        try { reference = await resolveDrawImage(image, { hub, chat }) } catch (error) { return { ok: false, message: error.message } }
+        const running = runningIn(chat.chatId)
+        if (running >= MAX_PER_CHAT) return { ok: false, message: `手上还有 ${running} 张没画完，等这两张出来再说` }
+        const id = ++seq
+        jobs.set(id, { id, chatId: chat.chatId, prompt: String(prompt || ''), status: 'drawing', startedAt: Date.now() })
+        void runDraw(id, chat, { prompt, shape, reference })
+        return { ok: true, message: `画图任务 #${id} 已提交，画好会自动发到聊天里，到时候我再跟你说。先跟主人说一声你在画。` }
       },
     }) : []))
     return gen
