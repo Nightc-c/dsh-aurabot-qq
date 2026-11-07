@@ -106,12 +106,20 @@ export default {
         let img = null
         if (visual && seeOwn) {
           img = await imageForPush(buf, api.config().bili && api.config().bili.ffmpegPath)
-          if (!img) api.log.debug('这次生图没把图交给模型（缩图失败），只给文字')
+          api.log.debug(`生图 #${id}：原图 ${Math.round(buf.length / 1024)}KB → ${img ? `图块 ${Math.round((img.data.length * 0.75) / 1024)}KB，准备交给模型` : '缩图失败，只给文字'}`)
+        } else {
+          api.log.debug(`生图 #${id}：不带图（canSeeImages=${visual}，seeOwn=${seeOwn}）`)
         }
         const note = `（你自己画的那张图已经发在聊天里了——这是你亲手画的，不是别人或工具画的。提示词是：${String(prompt).slice(0, 120)}${index ? `；画作编号 #${index}` : ''}。`
           + (img && saved ? `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）` : '')
           + `${img ? '你看一眼' : '你看不到这张图'}，用你自己的口气跟主人说一句。）`
-        await hub.pushToSession(chat, img ? [img, { type: 'text', text: note }] : [{ type: 'text', text: note }], '')
+        try {
+          await hub.pushToSession(chat, img ? [img, { type: 'text', text: note }] : [{ type: 'text', text: note }], '')
+          api.log.debug(`生图 #${id}：已推回会话（${img ? '图+文字' : '只有文字'}）`)
+        } catch (error) {
+          api.log.warn(`生图 #${id}：推回会话失败：`, error.message)
+          throw error
+        }
       } catch (error) {
         if (job) { job.status = 'failed'; job.error = error.message }
         api.log.warn(`生图 #${id} 失败：`, error.message)
