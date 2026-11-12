@@ -896,7 +896,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 主人按聊天指定的模型（私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认）；没指定或指定的模型已不存在就用上面的
     try {
       const r = resolveChatModel(cfg, chat, typeof availableModels === 'function' ? availableModels() : null)
-      if (r) sel = { provider: r.provider, model: r.model, reasoningEffort: r.reasoningEffort || cfg.model.reasoningEffort || '' }
+      if (r) {
+        // 允许只改思考强度：没指定模型就沿用全局（或 DSH 默认），只把 reasoningEffort 换掉。
+        sel = {
+          provider: r.provider || (sel ? sel.provider : ''),
+          model: r.model || (sel ? sel.model : ''),
+          reasoningEffort: r.reasoningEffort || (sel ? sel.reasoningEffort : '') || cfg.model.reasoningEffort || '',
+        }
+      }
     } catch (error) {}
     if (hooks?.model && chat) {
       try {

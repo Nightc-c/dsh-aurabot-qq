@@ -12,13 +12,16 @@ export const CHAT_MODEL_EFFORTS = ['', 'low', 'high', 'max']
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v)
 const str = (v) => (typeof v === 'string' ? v.trim() : '')
 
-/** 一条选择：provider 和 model 都有才算数，否则 null（= 没指定）。 */
+/**
+ * 一条选择：模型（provider+model）或思考强度（reasoningEffort）任给其一都算数。
+ * 只填思考强度 = 不换模型，只改这个聊天的推理想法多少（模型回落到全局/DSH 默认）。
+ */
 export function normalizeSelection(v) {
   if (!isObj(v)) return null
   const provider = str(v.provider)
   const model = str(v.model)
-  if (!provider || !model) return null
   const effort = CHAT_MODEL_EFFORTS.includes(v.reasoningEffort) ? v.reasoningEffort : ''
+  if (!provider || !model) return effort ? { provider: '', model: '', reasoningEffort: effort } : null
   return { provider, model, reasoningEffort: effort }
 }
 
@@ -56,7 +59,12 @@ export function normalizeChatModels(raw) {
 export function resolveChatModel(cfg, chat, available = null) {
   if (!chat) return null
   const c = normalizeChatModels(cfg?.chatModels)
-  const ok = (s) => Boolean(s) && (!Array.isArray(available) || available.length === 0 || available.some((m) => m.provider === s.provider && m.model === s.model))
+  const ok = (s) => {
+    if (!s) return false
+    // 只设了思考强度、没指定模型：永远可用，模型回落到全局 / DSH 默认。
+    if (!s.provider || !s.model) return true
+    return !Array.isArray(available) || available.length === 0 || available.some((m) => m.provider === s.provider && m.model === s.model)
+  }
   let order = []
   if (chat.kind === 'private') order = [['private', c.privates[String(chat.userId ?? '')]], ['privateDefault', normalizeSelection(c.privateDefault)]]
   else if (chat.kind === 'group') order = [['group', c.groups[String(chat.groupId ?? '')]], ['groupDefault', normalizeSelection(c.groupDefault)]]

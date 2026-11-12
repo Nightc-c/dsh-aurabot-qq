@@ -178,3 +178,24 @@ test('聊天里的人说「换模型」换不了：只有主人的设置能改',
   assert.equal(JSON.stringify(JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')).chatModels), before)
   assert.equal(lastSel(`private:${FRIEND}`).model, 'fake-1')
 })
+
+// ---------- 只改思考强度（不换模型） ----------
+
+test('只设思考强度也能解析：provider/model 留空', () => {
+  assert.deepEqual(normalizeSelection({ reasoningEffort: 'high' }), { provider: '', model: '', reasoningEffort: 'high' })
+  assert.equal(normalizeSelection({}), null)
+})
+
+test('resolveChatModel：只设思考强度的聊天返回 effort-only，没设的返回 null', () => {
+  const c = normalize({ chatModels: { privates: { '123': { reasoningEffort: 'high' } } } })
+  assert.deepEqual(resolveChatModel(c, priv(123)), { provider: '', model: '', reasoningEffort: 'high', source: 'private' })
+  assert.equal(resolveChatModel(c, priv(456)), null)
+})
+
+test('只设思考强度时不受「模型不存在」影响', () => {
+  const c = normalize({ chatModels: { groups: { '9': { reasoningEffort: 'max' } } } })
+  const r = resolveChatModel(c, grp(9), [{ provider: 'fake', model: 'fake-1' }])
+  assert.equal(r.reasoningEffort, 'max')
+  assert.equal(r.provider, '')
+  assert.equal(r.source, 'group')
+})
