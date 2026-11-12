@@ -14,6 +14,9 @@ import { createHub } from '../src/chat/hub.js'
 import { createOutboundPolicy } from '../src/chat/outbound-policy.js'
 import { scopeCoreForModule } from '../src/core/modules.js'
 
+// 这个测试会真调 hub.deliver，不隔离数据目录会把假消息（private:10001）写进真实聊天流水。
+process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-outbound-wiring-'))
+
 /**
  * 造一个最小可用的 hub：onebot 的 call 记录被真正发出去的消息，
  * 其余依赖给能满足 createHub 的最小桩。
