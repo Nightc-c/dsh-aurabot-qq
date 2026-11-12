@@ -81,14 +81,18 @@ const simulationStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
 /**
  * 一轮结束时该发到 QQ 的文字：只认「这一轮最后一条 assistant 消息」里的 text 块。
- * 带工具调用的 assistant 消息是过程性发言（模型在调工具前写的计划/心里话），不是给用户看的回复；
- * 如果把它当回复补发，就会出现「模型把自己的思考发出来」——这种情况宁可沉默，也不要把过程性文字发出去。
+ *
+ * 带工具调用的 assistant 消息默认是过程性发言（模型在调工具前写的计划/心里话），不是给用户看的回复，
+ * 一律丢弃——否则会出现「模型把自己的思考发出来」。
+ * 但有一个例外：模型明确用 ⟦REPLY⟧ 标记包住的文本是它特意要发的话（正文标记由代码注入提示），
+ * 这种情况放行，交给 turn/end 的标记剥离再发出去；没标记的照旧丢弃。
  */
 export function assistantReplyText (message) {
   if (!message || !Array.isArray(message.content)) return ''
+  const text = message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
   const hasToolCall = message.content.some((b) => b && (b.type === 'tool-call' || b.type === 'tool_use'))
-  if (hasToolCall) return ''
-  return message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
+  if (hasToolCall) return extractMarkedReply(text).found ? text : ''
+  return text
 }
 
 /**

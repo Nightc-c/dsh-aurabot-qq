@@ -25,3 +25,13 @@ test('空消息 / 空文字返回空（宁可沉默，不拿上一条补）', ()
 test('多个 text 块按行拼接', () => {
   assert.equal(assistantReplyText(msg([{ type: 'text', text: '第一行' }, { type: 'text', text: '第二行' }])), '第一行\n第二行')
 })
+
+test('带工具调用但明确用 ⟦REPLY⟧ 标了要发的话：放行', () => {
+  const marked = '⟦REPLY⟧我去看看有没有新版本。⟦/REPLY⟧'
+  assert.equal(assistantReplyText(msg([{ type: 'text', text: marked }, { type: 'tool-call', name: 'x', arguments: '{}' }])), marked)
+})
+
+test('带工具调用、只有半个标记：仍然不放行', () => {
+  assert.equal(assistantReplyText(msg([{ type: 'text', text: '⟦REPLY⟧只有开头' }, { type: 'tool-call', name: 'x' }])), '⟦REPLY⟧只有开头')
+  assert.equal(assistantReplyText(msg([{ type: 'text', text: '没有标记的过程话' }, { type: 'tool-call', name: 'x' }])), '')
+})
