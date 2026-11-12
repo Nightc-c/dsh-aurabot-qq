@@ -1957,29 +1957,50 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
-    /** 按聊天选模型：私聊默认 / 群聊默认两个下拉，单个 QQ / 群的例外放在默认收起的小列表里。 */
+    /** 按聊天选模型 / 思考强度：私聊默认 / 群聊默认两个下拉，单个 QQ / 群的例外放在默认收起的小列表里。 */
     function ChatModels({ draft, setDraft, list }) {
       const cm = draft.chatModels || { privateDefault: {}, groupDefault: {}, privates: {}, groups: {} }
       const [open, setOpen] = useState(false)
-      const [add, setAdd] = useState({ kind: 'private', id: '', sel: '' })
+      const [add, setAdd] = useState({ kind: 'private', id: '', sel: '', effort: '' })
       const key = (m) => m.provider + '::' + m.model
       const val = (s) => (s && s.provider && s.model ? s.provider + '::' + s.model : '')
-      const toSel = (v) => { const [p, ...m] = v.split('::'); return v ? { provider: p, model: m.join('::'), reasoningEffort: '' } : { provider: '', model: '', reasoningEffort: '' } }
+      const effortOf = (s) => (s && s.reasoningEffort) || ''
+      // 只选思考强度、不选模型也允许：模型留空就沿用上一级 / 全局模型。
+      const toSel = (v, effort = '') => {
+        const [p, ...m] = String(v || '').split('::')
+        return v ? { provider: p, model: m.join('::'), reasoningEffort: effort } : { provider: '', model: '', reasoningEffort: effort }
+      }
+      const EFFORTS = [
+        { value: '', label: '跟随全局强度' },
+        { value: 'low', label: '低（快）' },
+        { value: 'high', label: '高' },
+        { value: 'max', label: '最高' },
+      ]
       const base = [{ value: '', label: '跟随全局模型', desc: '上面「聊天用的模型」' }].concat((list || []).map((m) => ({ value: key(m), label: m.name, desc: m.provider, group: m.provider })))
       const optsFor = (v) => (v && !base.some((o) => o.value === v) ? base.concat([{ value: v, label: v.split('::').slice(1).join('::'), desc: '（DSH 里没找到）' }]) : base)
       const setCm = (patch) => setDraft(setPath(draft, 'chatModels', { ...cm, ...patch }))
       const rows = [['private', cm.privates || {}], ['group', cm.groups || {}]].flatMap(([kind, m]) => Object.entries(m).map(([id, sel]) => ({ kind, id, sel })))
-      const label = (sel) => { const v = val(sel); const hit = (list || []).find((m) => key(m) === v); return hit ? hit.name : sel.model }
+      const label = (sel) => {
+        const v = val(sel)
+        const hit = (list || []).find((m) => key(m) === v)
+        const modelName = hit ? hit.name : (v ? sel.model : '跟随全局模型')
+        const effortName = (EFFORTS.find((e) => e.value === effortOf(sel)) || EFFORTS[0]).label
+        return modelName + ' · ' + effortName
+      }
       const addRow = () => {
-        if (!add.id || !add.sel) return
+        if (!add.id || (!add.sel && !add.effort)) return
         const field = add.kind === 'private' ? 'privates' : 'groups'
-        setCm({ [field]: { ...(cm[field] || {}), [add.id]: toSel(add.sel) } })
+        setCm({ [field]: { ...(cm[field] || {}), [add.id]: toSel(add.sel, add.effort) } })
         setAdd({ ...add, id: '' })
       }
       const remove = (kind, id) => { const field = kind === 'private' ? 'privates' : 'groups'; const n = { ...(cm[field] || {}) }; delete n[id]; setCm({ [field]: n }) }
-      return h(Card, { title: '按聊天选模型', desc: '顺序：这个私聊 > 这个群 > 所有私聊 / 所有群的默认 > 上面的全局模型。没选的一级就用下一级；选的模型在 DSH 里找不到时也自动退回。只有你能在这里改，聊天里的人换不了。换了之后从那个聊天的下一条消息起生效。' },
-        h(Row, { label: '私聊默认模型' }, h(Select, { value: val(cm.privateDefault), width: 280, options: optsFor(val(cm.privateDefault)), onChange: (v) => setCm({ privateDefault: toSel(v) }) })),
-        h(Row, { label: '群聊默认模型' }, h(Select, { value: val(cm.groupDefault), width: 280, options: optsFor(val(cm.groupDefault)), onChange: (v) => setCm({ groupDefault: toSel(v) }) })),
+      return h(Card, { title: '按聊天选模型 / 思考强度', desc: '顺序：这个私聊 > 这个群 > 所有私聊 / 所有群的默认 > 上面的全局模型。没选的一级就用下一级；选的模型在 DSH 里找不到时也自动退回。模型可以留「跟随全局」，只改思考强度。只有你能在这里改，聊天里的人换不了。换了之后从那个聊天的下一条消息起生效。' },
+        h(Row, { label: '私聊默认模型' },
+          h(Select, { value: val(cm.privateDefault), width: 240, options: optsFor(val(cm.privateDefault)), onChange: (v) => setCm({ privateDefault: toSel(v, effortOf(cm.privateDefault)) }) }),
+          h(Select, { value: effortOf(cm.privateDefault), width: 150, options: EFFORTS, onChange: (v) => setCm({ privateDefault: toSel(val(cm.privateDefault), v) }) })),
+        h(Row, { label: '群聊默认模型' },
+          h(Select, { value: val(cm.groupDefault), width: 240, options: optsFor(val(cm.groupDefault)), onChange: (v) => setCm({ groupDefault: toSel(v, effortOf(cm.groupDefault)) }) }),
+          h(Select, { value: effortOf(cm.groupDefault), width: 150, options: EFFORTS, onChange: (v) => setCm({ groupDefault: toSel(val(cm.groupDefault), v) }) })),
         h('div', { style: { marginTop: 8 } }, h(Btn, { small: true, kind: 'ghost', onClick: () => setOpen(!open) }, (open ? '收起' : '展开') + '单个 QQ / 群的例外（' + rows.length + '）')),
         open ? h('div', { style: { marginTop: 8 } },
           rows.length === 0 ? h('div', { className: 'ab-muted', style: { marginBottom: 10 } }, '还没有单独设置的 QQ 或群。') :
@@ -1987,8 +2008,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex' },
             h(Seg, { value: add.kind, onChange: (v) => setAdd({ ...add, kind: v }), options: [{ value: 'private', label: '私聊' }, { value: 'group', label: '群' }] }),
             h('input', { className: 'ab-input', placeholder: add.kind === 'private' ? 'QQ 号' : '群号', value: add.id, onChange: (e) => setAdd({ ...add, id: e.target.value.replace(/\D/g, '') }) }),
-            h(Select, { value: add.sel, width: 220, options: base.filter((o) => o.value), placeholder: '选模型', onChange: (v) => setAdd({ ...add, sel: v }) }),
-            h(Btn, { small: true, disabled: !add.id || !add.sel, onClick: addRow }, '添加'))) : null)
+            h(Select, { value: add.sel, width: 200, options: base.filter((o) => o.value), placeholder: '选模型（可留空）', onChange: (v) => setAdd({ ...add, sel: v }) }),
+            h(Select, { value: add.effort, width: 150, options: EFFORTS, onChange: (v) => setAdd({ ...add, effort: v }) }),
+            h(Btn, { small: true, disabled: !add.id || (!add.sel && !add.effort), onClick: addRow }, '添加'))) : null)
     }
 
     /** 模型页：DeepSeek 峰谷省钱模式（默认关，只影响后台模型调用时机，聊天回复不变）。 */
